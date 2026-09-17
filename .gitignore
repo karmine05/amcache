@@ -1,0 +1,17 @@
+/build/
+*.ext
+*.ext.exe
+*.test.exe
+*.hve
+*.LOG1
+*.LOG2
+/tests/
+.planning/
+.claude/
+.claude-mem/
+CLAUDE.md
+AGENTS.md
+*graphify*
+.mcp.json
+.env*
+.DS_Store
