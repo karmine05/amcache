@@ -1,0 +1,94 @@
+# There is no test job here by design. The tests and the fixture hives they read
+# live in the gitignored tests/ directory and never reach this repository, so a
+# runner has nothing to run: `make test` is a local-only gate on the owner's
+# machine. Every step below mirrors the Makefile target of the same name, so a
+# green `make check` cannot diverge from a red run here.
+
+name: ci
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: gates
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: install go from the version in go.mod
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: gofmt
+        run: |
+          out="$(gofmt -l .)"; if [ -n "$out" ]; then echo "gofmt needed:"; echo "$out"; exit 1; fi
+
+      - name: verify module checksums
+        run: go mod verify
+
+      - name: check the module graph is tidy
+        # Prints a unified diff and exits non-zero without mutating go.mod. This
+        # is the gate that catches a dependency reachable only from the windows
+        # build, which a macOS-only `go build ./...` never resolves.
+        run: go mod tidy -diff
+
+      - name: vet for the host and for windows
+        # The windows pass is the only one that sees the //go:build windows
+        # files, which are most of the filesystem surface.
+        run: |
+          go vet ./...
+          GOOS=windows go vet ./...
+
+      - name: cross-build both windows architectures
+        # Through the Makefile so the build flags cannot drift from a release.
+        run: make windows windows-arm64
+
+      - name: gosec
+        # No GOTOOLCHAIN prefix, unlike the Makefile: after setup-go with
+        # go-version-file the ambient go already is the version go.mod asks for,
+        # and GOOS/GOARCH are unset on the runner, so the tool builds native.
+        # gosec runs under GOOS=windows only: on linux the build tags hide every
+        # file that touches the filesystem and a host run reports nothing.
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          GOOS=windows gosec -severity medium ./...
+
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          govulncheck ./...
+          GOOS=windows govulncheck ./...
+
+  weekly-vuln:
+    name: weekly vulnerability scan
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: install go from the version in go.mod
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: govulncheck
+        # A dependency that was clean on merge day can be reported vulnerable
+        # later; nothing in the repository has to change for this to turn red.
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          govulncheck ./...
+          GOOS=windows govulncheck ./...
