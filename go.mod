@@ -2,11 +2,15 @@ module github.com/karmine05/amcache
 
 go 1.27.1
 
-require github.com/osquery/osquery-go v0.0.0-20260508130258-3e773449a5d4
+require (
+	github.com/osquery/osquery-go v0.0.0-20260508130258-3e773449a5d4
+	www.velocidex.com/golang/regparser v0.0.0-20250203141505-31e704a67ef7
+)
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/apache/thrift v0.23.0 // indirect
+	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/go-logr/logr v1.2.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/pkg/errors v0.8.0 // indirect
