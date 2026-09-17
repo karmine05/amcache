@@ -3,15 +3,146 @@
 package hive
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 
 	"golang.org/x/sys/windows"
 	"www.velocidex.com/golang/go-ntfs/parser"
 )
+
+// Read acquires the Amcache hive and returns it ready to parse, replaying the
+// transaction logs in memory when the hive is dirty. Result records which route
+// produced the bytes and whether a replay was needed, because the caller is the
+// only place that logs.
+func Read(ctx context.Context) (Result, error) {
+	s, err := acquireHive(ctx)
+	if err != nil {
+		return Result{}, err
+	}
+	res := Result{Data: s.data, Raw: s.raw}
+
+	dirty, err := Dirty(res.Data)
+	if err != nil {
+		return Result{}, err
+	}
+	if !dirty {
+		// An idle host never touches the logs at all: reading them would be
+		// pointless I/O and, on the raw route, a second privileged volume open.
+		return res, nil
+	}
+	res.Dirty = true
+
+	if cerr := ctx.Err(); cerr != nil {
+		return Result{}, cerr
+	}
+	// A missing or unreadable log is skipped rather than fatal, because partial
+	// recovery beats no data. This package has no logger: the caller reads the
+	// route and the dirtiness off Result, and anything Replay could not apply
+	// comes back as its error.
+	var logs [][]byte
+	for _, suffix := range []string{".LOG1", ".LOG2"} {
+		if b, lerr := s.readLog(suffix); lerr == nil {
+			logs = append(logs, b)
+		}
+	}
+	// ctx is not checked inside Replay: that is pure CPU over resident bytes.
+	out, err := Replay(res.Data, logs...)
+	if err != nil {
+		return Result{}, err
+	}
+	res.Data = out
+	return res, nil
+}
+
+// Files holds the hive and its two transaction logs as they are on disk,
+// unreplayed.
+type Files struct {
+	Hive, Log1, Log2 []byte
+	Raw              bool
+}
+
+// ReadFiles exists only so the Windows test binary can capture a fixture: the
+// replay has to be re-runnable later, on another machine, against the exact
+// bytes the host held at capture time. Read is the production entry point.
+func ReadFiles(ctx context.Context) (Files, error) {
+	s, err := acquireHive(ctx)
+	if err != nil {
+		return Files{}, err
+	}
+	if cerr := ctx.Err(); cerr != nil {
+		return Files{}, cerr
+	}
+	// Both logs are read whether or not the hive is dirty, and a log that cannot
+	// be read leaves its field nil.
+	f := Files{Hive: s.data, Raw: s.raw}
+	f.Log1, _ = s.readLog(".LOG1")
+	f.Log2, _ = s.readLog(".LOG2")
+	return f, nil
+}
+
+// source is an acquired hive plus what the log reads need to follow the same
+// route. Read and ReadFiles share it so the classification below cannot drift
+// between them.
+type source struct {
+	drive string
+	path  string
+	data  []byte
+	raw   bool
+}
+
+func acquireHive(ctx context.Context) (source, error) {
+	dir, path, err := hivePath()
+	if err != nil {
+		return source{}, err
+	}
+	s := source{drive: dir[:2], path: path}
+
+	// The case order is the classification: absent first, then the two share
+	// violations, then everything else unchanged. errors.Is separates all three
+	// cleanly through the *fs.PathError, whichever stage inside readPlain
+	// produced the failure.
+	data, err := readPlain(path, MaxHiveBytes)
+	switch {
+	case err == nil:
+		s.data = data
+		return s, nil
+	case errors.Is(err, fs.ErrNotExist):
+		return source{}, ErrNotFound
+	case errors.Is(err, windows.ERROR_SHARING_VIOLATION),
+		errors.Is(err, windows.ERROR_LOCK_VIOLATION):
+		// The appraiser has the hive open. A raw volume handle is privileged and
+		// high-signal to any EDR, so it is opened for this one failure and for
+		// nothing else; a violation raised mid-read is as much a trigger as one
+		// raised at open.
+		if cerr := ctx.Err(); cerr != nil {
+			return source{}, cerr
+		}
+		raw, rerr := readRaw(s.drive, path, MaxHiveBytes)
+		if rerr != nil {
+			return source{}, rerr
+		}
+		s.data, s.raw = raw, true
+		return s, nil
+	default:
+		return source{}, err
+	}
+}
+
+// readLog reads one transaction log through whichever route produced the hive.
+// On the raw route this opens a second volume handle rather than threading one
+// NTFS context through both reads; it only fires when the hive is dirty and
+// locked at the same time.
+func (s source) readLog(suffix string) ([]byte, error) {
+	if s.raw {
+		return readRaw(s.drive, s.path+suffix, MaxLogBytes)
+	}
+	return readPlain(s.path+suffix, MaxLogBytes)
+}
 
 // hivePath returns the Windows directory and the hive path under it. The
 // directory comes from the API and never from an environment variable: this
