@@ -92,7 +92,13 @@ func Replay(hive []byte, logs ...[]byte) ([]byte, error) {
 		if t := lr.BaseBlock.Type(); t == 1 || t == 2 {
 			continue
 		}
-		// The hive is already past everything this log holds.
+		// The hive is already past everything this log holds. The spec's
+		// precondition is >=, not ==, and the difference is load-bearing: a
+		// primary file stays dirty on disk from the moment it goes dirty until
+		// the next successful flush, while the circular logs run on and recycle
+		// the entries in between, so a live hive is routinely hundreds of
+		// sequences behind its logs. Requiring continuity between the two would
+		// refuse to replay exactly the hives replay exists for.
 		if lr.BaseBlock.Sequence1() < baseSeq2 {
 			continue
 		}
