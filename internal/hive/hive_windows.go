@@ -257,11 +257,18 @@ func readRaw(drive, winPath string, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("amcache: raw %s is %d bytes, outside (0, %d]", winPath, n, limit)
 	}
 	buf := make([]byte, n)
-	// A short read past the last run reports io.EOF with the bytes already
-	// filled in, so EOF is an outcome here and not a failure.
+	// A read that fills the buffer exactly reports io.EOF alongside the bytes,
+	// so EOF is an outcome here and not a failure -- but only when every byte
+	// arrived. A sparse tail, a run list that does not cover the declared size,
+	// or a volume error surfaced as EOF would otherwise return a truncated hive,
+	// or an empty one, as a success, and silently make the raw route return
+	// something different from the plain route for the same file.
 	got, err := rng.ReadAt(buf, 0)
 	if err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("amcache: raw read of %s: %w", winPath, err)
 	}
-	return buf[:got], nil
+	if int64(got) != n {
+		return nil, fmt.Errorf("amcache: raw read of %s returned %d of %d bytes", winPath, got, n)
+	}
+	return buf, nil
 }
