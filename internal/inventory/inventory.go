@@ -8,10 +8,16 @@
 package inventory
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"log"
+	"slices"
+	"strings"
 	"sync"
+	"unicode/utf16"
 
 	"www.velocidex.com/golang/regparser"
 )
@@ -218,6 +224,158 @@ func subkeys(reg *regparser.Registry, n *regparser.CM_KEY_NODE) ([]*regparser.CM
 }
 
 // Parse extracts the seven inventory keys from an acquired hive.
+//
+// The descent walks the base block to Root and classifies Root's children in one
+// pass rather than opening each key by path: regparser's OpenKey calls Subkeys
+// on every component, so seven OpenKey calls would perform fourteen walks, two
+// of them on nodes nothing pre-flighted. This shape performs two guarded walks
+// and makes the legacy classification fall out of the same pass.
 func Parse(ctx context.Context, hive []byte) (*Snapshot, error) {
-	return nil, ErrNotAmcache
+	reg, err := regparser.NewRegistry(bytes.NewReader(hive))
+	if err != nil {
+		return nil, fmt.Errorf("amcache: base block: %w", err)
+	}
+	// A local, threaded into the value guards. A package-level hive length is a
+	// data race between two concurrent parses, and the bound it feeds is the one
+	// standing between a corrupt cell offset and a panic.
+	hiveLen := int64(len(hive))
+
+	base := reg.Profile.HCELL(reg.Reader, 0x1000+int64(reg.BaseBlock.RootCell())).KeyNode()
+	if base == nil {
+		return nil, ErrNotAmcache
+	}
+	top, err := subkeys(reg, base)
+	if err != nil {
+		return nil, fmt.Errorf("amcache: base block subkey index: %w", err)
+	}
+	// EqualFold because the registry is case-insensitive; this is the comparison
+	// OpenKey performs with a ToLower allocation per subkey per component.
+	var root *regparser.CM_KEY_NODE
+	for _, n := range top {
+		if strings.EqualFold(nodeName(reg, n), "Root") {
+			root = n
+			break
+		}
+	}
+	if root == nil {
+		return nil, ErrNotAmcache
+	}
+	children, err := subkeys(reg, root)
+	if err != nil {
+		return nil, fmt.Errorf("amcache: Root subkey index: %w", err)
+	}
+
+	found := make(map[string]*regparser.CM_KEY_NODE, len(Keys))
+	var legacy bool
+	for _, n := range children {
+		name := nodeName(reg, n)
+		for _, k := range Keys {
+			if strings.EqualFold(name, k) {
+				found[k] = n
+				break
+			}
+		}
+		if strings.EqualFold(name, "File") || strings.EqualFold(name, "Programs") {
+			legacy = true
+		}
+	}
+	if len(found) == 0 {
+		if legacy {
+			warn(warnLegacy, "amcache: hive carries the pre-Windows-8 Amcache format; "+
+				"the inventory tables serve zero rows because this build parses only the modern format")
+			return &Snapshot{Legacy: true, Keys: map[string][]Record{}}, nil
+		}
+		return nil, ErrNotAmcache
+	}
+
+	snap := &Snapshot{Keys: make(map[string][]Record, len(found))}
+	for _, k := range Keys {
+		n, ok := found[k]
+		if !ok {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		subs, err := subkeys(reg, n)
+		if err != nil {
+			// A rejected index costs one key, never the parse. The key name is one
+			// of our own constants and the error carries no hive content, so both
+			// are safe to log.
+			warn(warnSubkeyIndex, "amcache: %s: subkey index rejected (%v); that key serves zero rows", k, err)
+			continue
+		}
+		recs := make([]Record, 0, len(subs))
+		for i, s := range subs {
+			if i%ctxCheckEvery == 0 {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+			}
+			if r, ok := record(reg, s, hiveLen); ok {
+				recs = append(recs, r)
+			}
+		}
+		// The walk order is Windows' lh hash order, not lexical, so an unsorted
+		// golden is unreadable and a cross-fixture diff is meaningless. It is not
+		// here for -update idempotence: the walk is already deterministic per hive,
+		// so that holds either way. Stable so that a hive carrying a duplicate
+		// subkey name cannot make the order depend on the sort's internals.
+		slices.SortStableFunc(recs, func(a, b Record) int { return strings.Compare(a.Name, b.Name) })
+		snap.Keys[k] = recs
+	}
+	return snap, nil
+}
+
+// record builds one row from one subkey.
+func record(reg *regparser.Registry, n *regparser.CM_KEY_NODE, hiveLen int64) (Record, bool) {
+	return Record{
+		Name:      nodeName(reg, n),
+		LastWrite: lastWrite(reg, n),
+		V:         map[string]string{},
+	}, true
+}
+
+// nodeName branches on KEY_COMP_NAME because regparser never consults it:
+// Name reads NameLength raw bytes whatever the flag says, so an uncompressed
+// name otherwise comes back as UTF-16 reinterpreted as a Go string, which
+// ToValidUTF8 does not repair because interleaved NULs are valid UTF-8. Every
+// name on every fixture is compressed, so this branch is reachable today only
+// from corrupt input -- one bit clears 0x20 -- and from a future non-ASCII host.
+func nodeName(reg *regparser.Registry, n *regparser.CM_KEY_NODE) string {
+	if n.Flags()&0x20 != 0 {
+		return n.Name()
+	}
+	return utf16le(regparser.ParseSafeArray_byte(reg.Reader,
+		n.Offset+reg.Profile.Off_CM_KEY_NODE__Name, int(n.NameLength())))
+}
+
+// utf16le decodes with unicode/utf16 rather than regparser's UTF16BytesToUTF8,
+// whose BOM branches are inverted.
+func utf16le(b []byte) string {
+	u := make([]uint16, len(b)/2)
+	for i := range u {
+		u[i] = binary.LittleEndian.Uint16(b[2*i:])
+	}
+	return string(utf16.Decode(u))
+}
+
+// FILETIME ticks (100 ns) from 1601-01-01 to 1970-01-01 and to 2100-01-01.
+const (
+	filetimeEpoch = 116444736000000000
+	filetimeMax   = 157469184000000000
+)
+
+// lastWrite reads the raw FILETIME instead of calling LastWriteTime, whose
+// conversion is an unsigned subtraction: a zero FILETIME comes back as the year
+// 60056 and IsZero is never true, so neither a cast nor IsZero can produce the
+// LastWrite == 0 this contract promises for a zero or pre-epoch stamp. The
+// upper bound is here for the same reason -- a corrupt stamp must read as
+// unknown, not as a date three centuries out.
+func lastWrite(reg *regparser.Registry, n *regparser.CM_KEY_NODE) int64 {
+	ft := regparser.ParseUint64(reg.Reader, n.Offset+reg.Profile.Off_CM_KEY_NODE_LastWriteTime)
+	if ft < filetimeEpoch || ft >= filetimeMax {
+		return 0
+	}
+	return int64(ft/10000000) - filetimeEpoch/10000000
 }
