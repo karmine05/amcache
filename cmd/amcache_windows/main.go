@@ -32,6 +32,12 @@ func main() {
 	if *socket == "" {
 		log.Fatalln("amcache_windows: --socket is required")
 	}
+	// osquery-go's health-check loop hands this straight to time.Sleep inside an
+	// unconditional for, so a non-positive value returns immediately and spins a
+	// goroutine pinging the extension socket as fast as the CPU allows.
+	if *interval <= 0 {
+		log.Fatalln("amcache_windows: --interval must be positive")
+	}
 
 	// 60 s is the thrift socket timeout, not osquery's --timeout: a cold read of
 	// the hive can need a raw NTFS read of the system volume plus transaction-log
