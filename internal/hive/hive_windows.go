@@ -19,6 +19,12 @@ import (
 // transaction logs in memory when the hive is dirty. Result records which route
 // produced the bytes and whether a replay was needed, because the caller is the
 // only place that logs.
+//
+// Data returned with a nil error is always clean: a hive that is still dirty
+// after replay comes back as an error instead, with whatever log reads failed
+// joined to it. A torn hive parses into rows that look exactly as authoritative
+// as correct ones, so there is no useful way for a caller to act on "here are
+// the bytes, they may be from two generations at once".
 func Read(ctx context.Context) (Result, error) {
 	s, err := acquireHive(ctx)
 	if err != nil {
@@ -35,25 +41,37 @@ func Read(ctx context.Context) (Result, error) {
 		// pointless I/O and, on the raw route, a second privileged volume open.
 		return res, nil
 	}
-	res.Dirty = true
+	res.Replayed = true
 
 	if cerr := ctx.Err(); cerr != nil {
 		return Result{}, cerr
 	}
-	// A missing or unreadable log is skipped rather than fatal, because partial
-	// recovery beats no data. This package has no logger: the caller reads the
-	// route and the dirtiness off Result, and anything Replay could not apply
-	// comes back as its error.
+	// One unreadable log is not fatal on its own: the other may carry the whole
+	// chain, and partial recovery beats no data. What is fatal is ending up with
+	// a hive the logs did not clean. This package has no logger, so the reads
+	// that failed are carried until it is known whether they mattered.
 	var logs [][]byte
+	var logErrs []error
 	for _, suffix := range []string{".LOG1", ".LOG2"} {
-		if b, lerr := s.readLog(suffix); lerr == nil {
-			logs = append(logs, b)
+		b, lerr := s.readLog(suffix)
+		if lerr != nil {
+			logErrs = append(logErrs, fmt.Errorf("amcache: %s%s: %w", s.path, suffix, lerr))
+			continue
 		}
+		logs = append(logs, b)
 	}
 	// ctx is not checked inside Replay: that is pure CPU over resident bytes.
 	out, err := Replay(res.Data, logs...)
 	if err != nil {
 		return Result{}, err
+	}
+	stillDirty, err := Dirty(out)
+	if err != nil {
+		return Result{}, err
+	}
+	if stillDirty {
+		return Result{}, errors.Join(append(logErrs,
+			fmt.Errorf("amcache: %s is dirty and the transaction logs did not recover it", s.path))...)
 	}
 	res.Data = out
 	return res, nil

@@ -16,10 +16,14 @@ import (
 // Result is declared here rather than in hive_windows.go / hive_other.go: those
 // two are mutually exclusive, so a struct declared in both can drift apart
 // without any build ever failing.
+// Replayed, not Dirty: the field records that the hive on disk was dirty and has
+// been replayed, not that Data is dirty. Read never returns dirty Data with a
+// nil error, so the two readings are opposites and the wrong one is the one a
+// caller reaches for first.
 type Result struct {
-	Data  []byte
-	Raw   bool
-	Dirty bool
+	Data     []byte
+	Raw      bool
+	Replayed bool
 }
 
 // These bound every allocation this package drives from a file-declared size.
