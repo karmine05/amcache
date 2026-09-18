@@ -45,8 +45,27 @@ vet:
 # tests/ is gitignored and absent on a fresh clone, hence the guard. The guard is
 # an if and not `test -d tests && go test ... || echo`: in that form the echo
 # also runs when go test fails, which leaves the recipe exiting 0 on a red suite.
+#
+# Two invocations, and the split is deliberate. TestFuzzParse is sharded over
+# NumCPU workers and runs 4,400 parses of each fixture: about 22 s unraced
+# against 5 m 25 s under -race, which is the difference between a gate that runs
+# before every commit and one that gets skipped. The parser spawns no goroutines
+# of its own, so the only race that harness can find is package-level mutable
+# state in internal/inventory -- which research finding F-13 already turns into a
+# hard design rule (no package-level mutables, sync.Once for the warning dedupe)
+# enforced by review. Everything else still runs raced.
+#
+# The two filters are one pair: the -skip and the -run must both keep matching
+# the TestFuzz prefix in tests/inventory_fuzz_test.go, or the fuzz either runs
+# twice (once raced) or not at all.
+#
+# && , never ; -- a failure in the first invocation must not be overwritten by a
+# second that succeeds. That is CR-05's defect one command over.
 test:
-	@if [ -d tests ]; then go test -race -count=1 ./...; else echo "tests/ absent (gitignored)"; fi
+	@if [ -d tests ]; then \
+	  go test -race -count=1 -skip 'TestFuzz' ./... && \
+	  go test -count=1 -run 'TestFuzz' ./tests; \
+	else echo "tests/ absent (gitignored)"; fi
 
 # GOTOOLCHAIN and the cleared GOOS/GOARCH are both load-bearing. A govulncheck
 # built by a Go older than this module's `go 1.27.1` directive hard-fails with
