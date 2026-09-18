@@ -53,23 +53,14 @@ jobs:
         # Through the Makefile so the build flags cannot drift from a release.
         run: make windows windows-arm64
 
-      - name: gosec
-        # No GOTOOLCHAIN prefix, unlike the Makefile: after setup-go with
-        # go-version-file the ambient go already is the version go.mod asks for,
-        # and GOOS/GOARCH are unset on the runner, so the tool builds native.
-        # gosec runs under GOOS=windows only: on linux the build tags hide every
-        # file that touches the filesystem and a host run reports nothing.
-        run: |
-          go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
-          export PATH="$(go env GOPATH)/bin:$PATH"
-          GOOS=windows gosec -severity medium ./...
-
-      - name: govulncheck
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
-          export PATH="$(go env GOPATH)/bin:$PATH"
-          govulncheck ./...
-          GOOS=windows govulncheck ./...
+      - name: gosec and govulncheck
+        # Through the Makefile, like the cross-build above: the pinned versions
+        # live in GOSEC_VERSION/GOVULN_VERSION and nowhere else, so the "a green
+        # make check cannot diverge from a red run here" invariant in the header
+        # stops being hand-maintained across duplicated literals. The Makefile's
+        # GOTOOLCHAIN prefix is satisfied by setup-go's go-version-file install,
+        # so it pins rather than downloads.
+        run: make sec vuln
 
   weekly-vuln:
     name: weekly vulnerability scan
@@ -87,8 +78,4 @@ jobs:
       - name: govulncheck
         # A dependency that was clean on merge day can be reported vulnerable
         # later; nothing in the repository has to change for this to turn red.
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
-          export PATH="$(go env GOPATH)/bin:$PATH"
-          govulncheck ./...
-          GOOS=windows govulncheck ./...
+        run: make vuln
