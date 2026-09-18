@@ -209,6 +209,16 @@ func Replay(hive []byte, logs ...[]byte) ([]byte, error) {
 	}
 
 	if applied {
+		// hbins comes verbatim from a log entry and is only known to be
+		// page-aligned; nothing has tied it to the bytes actually recovered. A
+		// consumer enumerates hive bins bounded by this field, so a value larger
+		// than the buffer walks bin headers past the end of the reader, and one
+		// smaller silently truncates the walk and drops inventory rows. len(out)
+		// is final here, which is the only place the two can be compared.
+		if int64(hbins) > int64(len(out))-0x1000 {
+			return nil, fmt.Errorf("amcache: replayed hive declares %d bytes of hive bins data but holds %d",
+				hbins, int64(len(out))-0x1000)
+		}
 		// Both sequence numbers, the hive bins data size, the flags and the
 		// checksum together are what make Dirty(out) report false.
 		var b [4]byte
