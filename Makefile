@@ -40,9 +40,11 @@ vet:
 	GOOS=windows go vet ./...
 
 # -race requires cgo and so cannot cross-compile; host-only by necessity.
-# tests/ is gitignored and absent on a fresh clone, hence the guard.
+# tests/ is gitignored and absent on a fresh clone, hence the guard. The guard is
+# an if and not `test -d tests && go test ... || echo`: in that form the echo
+# also runs when go test fails, which leaves the recipe exiting 0 on a red suite.
 test:
-	@test -d tests && go test -race -count=1 ./... || echo "tests/ absent (gitignored)"
+	@if [ -d tests ]; then go test -race -count=1 ./...; else echo "tests/ absent (gitignored)"; fi
 
 # GOTOOLCHAIN and the cleared GOOS/GOARCH are both load-bearing. A govulncheck
 # built by a Go older than this module's `go 1.27.1` directive hard-fails with
