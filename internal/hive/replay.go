@@ -138,9 +138,15 @@ func Replay(hive []byte, logs ...[]byte) ([]byte, error) {
 			}
 			// GetDirtyPages and ParseArray_HIVE_DIRTY_PAGE_REF both pre-allocate
 			// DirtyPagesCount() slots, so the count is bounded before either runs:
-			// a declared 0xFFFFFFFF would otherwise reserve about 34 GB.
+			// a declared 0xFFFFFFFF would otherwise reserve about 34 GB. The
+			// weight is 8 bytes of ref plus the 4096-byte minimum page each ref
+			// must carry inside the same entry. Weighing the 8 alone bounds the
+			// ref array and nothing else, which still lets a 64 MiB log declare
+			// 8.3M refs and drive ~740 MB of pre-allocation before a single page
+			// is applied: an 11x amplification of the cap that is supposed to be
+			// what this process will spend on a log.
 			count := int64(le.DirtyPagesCount())
-			if 40+count*8 > size {
+			if 40+count*(8+4096) > size {
 				break
 			}
 			// The spec requires an entry's hive bins data size to be page-aligned.
