@@ -31,6 +31,13 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: quality gates
+        # The same target that gates a commit locally. Without this the build
+        # job ran the cross-build directly, so a v* tag pushed at a commit whose
+        # ci run is red still cross-built, signed and published. tests/ is
+        # gitignored, so `make test` prints and passes on a runner.
+        run: make check
+
       - name: build both windows architectures at the tag version
         # The tag drives -X main.version, so v0.1.0 stamps 0.1.0.
         run: make windows windows-arm64 VERSION="${GITHUB_REF_NAME#v}"
