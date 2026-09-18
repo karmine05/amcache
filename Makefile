@@ -18,6 +18,8 @@ GO_TOOLCHAIN   := go1.27.1
 GOSEC_VERSION  := v2.29.0
 GOVULN_VERSION := v1.8.0
 TOOLBIN        := $(CURDIR)/.tools
+GOSEC          := $(TOOLBIN)/gosec-$(GOSEC_VERSION)
+GOVULN         := $(TOOLBIN)/govulncheck-$(GOVULN_VERSION)
 
 .PHONY: all check fmt fmtcheck vet test sec vuln build windows windows-arm64 \
         testbin dist osq-verify-windows clean
@@ -50,20 +52,27 @@ test:
 # built by a Go older than this module's `go 1.27.1` directive hard-fails with
 # "package requires newer Go version", and a GOOS=windows install cross-compiles
 # the tool itself into an .exe this host cannot execute.
-$(TOOLBIN)/gosec:
+#
+# The version is stamped into the target name because these are file targets with
+# no prerequisites: with a bare $(TOOLBIN)/gosec, make considers an installed
+# binary up to date whatever the version variable says, so bumping GOSEC_VERSION
+# would silently keep enforcing SEC-02 with the previously installed build.
+$(GOSEC):
 	GOTOOLCHAIN=$(GO_TOOLCHAIN) GOBIN=$(TOOLBIN) GOOS= GOARCH= go install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
+	mv $(TOOLBIN)/gosec $@
 
-$(TOOLBIN)/govulncheck:
+$(GOVULN):
 	GOTOOLCHAIN=$(GO_TOOLCHAIN) GOBIN=$(TOOLBIN) GOOS= GOARCH= go install golang.org/x/vuln/cmd/govulncheck@$(GOVULN_VERSION)
+	mv $(TOOLBIN)/govulncheck $@
 
 # gosec runs under GOOS=windows only: on the host, //go:build windows hides every
 # file that touches the filesystem, so a host run reports nothing and is noise.
-sec: $(TOOLBIN)/gosec
-	GOOS=windows $(TOOLBIN)/gosec -severity medium -quiet ./...
+sec: $(GOSEC)
+	GOOS=windows $(GOSEC) -severity medium -quiet ./...
 
-vuln: $(TOOLBIN)/govulncheck
-	$(TOOLBIN)/govulncheck ./...
-	GOOS=windows $(TOOLBIN)/govulncheck ./...
+vuln: $(GOVULN)
+	$(GOVULN) ./...
+	GOOS=windows $(GOVULN) ./...
 
 ## ---- build ----
 build: windows
