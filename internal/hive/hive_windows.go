@@ -173,7 +173,8 @@ func hivePath() (dir, path string, err error) {
 	// GetSystemWindowsDirectoryW always returns a drive-qualified path, so a
 	// value that is not X:\... means the API or the host is not what we think it
 	// is, and dir[:2] is about to be concatenated into a \\.\ device path.
-	if len(dir) < 3 || dir[1] != ':' || dir[2] != '\\' {
+	if len(dir) < 3 || dir[2] != '\\' || dir[1] != ':' ||
+		!(dir[0] >= 'A' && dir[0] <= 'Z' || dir[0] >= 'a' && dir[0] <= 'z') {
 		return "", "", fmt.Errorf("amcache: unexpected windows directory %q", dir)
 	}
 	return dir, filepath.Join(dir, `AppCompat\Programs\Amcache.hve`), nil
