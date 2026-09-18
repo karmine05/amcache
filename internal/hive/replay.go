@@ -151,12 +151,34 @@ func Replay(hive []byte, logs ...[]byte) ([]byte, error) {
 				break
 			}
 
-			for _, p := range le.GetDirtyPages() {
+			// The whole page list is validated before any of it is applied. A
+			// half-applied entry cannot be undone, and the base block rewrite
+			// below would then stamp a matching sequence pair and a valid
+			// checksum over a hive that is half one generation and half another,
+			// which no consumer can detect. A bad ref instead ends the chain at
+			// the previous entry: the regf recovery rule stops at the first entry
+			// that does not validate, and the hive is consistent at the last one
+			// that did. The chain is truncated rather than the replay failed,
+			// because a torn tail is the normal state of a log read out from
+			// under the appraiser and a valid recovery point is worth keeping.
+			pages := le.GetDirtyPages()
+			torn := false
+			for _, p := range pages {
 				// Data() allocates PageSize bytes unconditionally, so both the size
-				// and the source range are checked before it is called.
-				if p.PageSize == 0 || p.DataOffset+int64(p.PageSize) > off+size {
+				// and the source range are checked before it is called. A dirty page
+				// is a whole number of 4096-byte hive bins pages; every page in
+				// every captured fixture is.
+				if p.PageSize == 0 || p.PageSize%4096 != 0 ||
+					p.DataOffset+int64(p.PageSize) > off+size {
+					torn = true
 					break
 				}
+			}
+			if torn {
+				break
+			}
+
+			for _, p := range pages {
 				data, err := p.Data()
 				if err != nil {
 					return nil, fmt.Errorf("amcache: dirty page at %#x: %w", p.DataOffset, err)
