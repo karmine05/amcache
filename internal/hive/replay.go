@@ -116,13 +116,28 @@ func Replay(hive []byte, logs ...[]byte) ([]byte, error) {
 		hbins   uint32
 		flags   uint32
 	)
-	for _, lg := range ready {
+	var expected uint32
+	for i, lg := range ready {
 		r := bytes.NewReader(lg.buf)
 		// Recovery starts at the log base block's primary sequence number and the
 		// regf spec ends it at the first gap: an entry numbered N must be followed
 		// by N+1. regparser instead compares against the log's own Sequence2, which
 		// stops on the first entry whenever the two happen to be equal.
-		expected := lg.seq
+		//
+		// The chain continues across logs rather than restarting at each log's own
+		// base. Restarting lets a second log whose range overlaps the first
+		// re-apply entries the first already superseded, putting an older page
+		// image on top of a newer one and recording the older sequence; both logs
+		// pass the Sequence1 >= hive.Sequence2 gate, which is deliberately loose,
+		// so overlapping ranges are ordinary. Moving forward to a later log's base
+		// is still allowed, on the same grounds the hive-to-log gap is: the
+		// circular logs recycle entries, and refusing the gap would refuse the
+		// hives replay exists for. Because expected only ever increases, the last
+		// entry applied is also the highest, which is what makes taking the header
+		// fields from it correct.
+		if i == 0 || lg.seq > expected {
+			expected = lg.seq
+		}
 		// Log entries always start at 0x200 and are a multiple of 512 bytes; the
 		// HvLE header is 40 bytes and carries 8 bytes per dirty page ref.
 		for off := int64(0x200); off < int64(len(lg.buf)); {
