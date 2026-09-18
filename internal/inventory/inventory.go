@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode/utf16"
@@ -109,6 +110,7 @@ const (
 	sigLh = 0x686c
 	sigRi = 0x6972
 	sigLi = 0x696c
+	sigDb = 0x6264
 )
 
 var (
@@ -327,13 +329,148 @@ func Parse(ctx context.Context, hive []byte) (*Snapshot, error) {
 	return snap, nil
 }
 
-// record builds one row from one subkey.
-func record(reg *regparser.Registry, n *regparser.CM_KEY_NODE, hiveLen int64) (Record, bool) {
-	return Record{
-		Name:      nodeName(reg, n),
-		LastWrite: lastWrite(reg, n),
-		V:         map[string]string{},
-	}, true
+// record builds one row from one subkey. A malformed record is skipped and its
+// siblings survive.
+//
+// The recover is the only one in this package and it is a backstop for the
+// unknown-unknowns, not the mitigation for anything tested: every failure mode
+// this package knows about has an explicit guard in front of it below, because
+// a guard is what a test can assert and a recover turns a bug into a silent row
+// loss. It is also not a general corruption defence -- the fatal stack overflow
+// an ri cycle produces is not a panic and reaches nothing here, which is why
+// indexSlots exists. Record granularity rather than value granularity: the
+// largest fixture holds 18,214 records against 102,975 values.
+func record(reg *regparser.Registry, n *regparser.CM_KEY_NODE, hiveLen int64) (rec Record, ok bool) {
+	defer func() {
+		if p := recover(); p != nil {
+			warn(warnRecordPanic, "amcache: a record was skipped after a parser panic (%v); "+
+				"later panics are not logged", p)
+			rec, ok = Record{}, false
+		}
+	}()
+
+	rec = Record{Name: nodeName(reg, n), LastWrite: lastWrite(reg, n), V: map[string]string{}}
+
+	// CHILD_LIST.Count is a uint32 read from the file and Values walks it bounded
+	// only by EOF, so the cap goes in front of the call and not around its result.
+	if count := n.ValueList().Count(); count > maxValues {
+		warn(warnValueCount, "amcache: a record declares %d values, over the %d cap; "+
+			"its values are dropped and the record is served with none", count, maxValues)
+		return rec, true
+	}
+	vals := n.Values()
+	rec.V = make(map[string]string, len(vals))
+	for _, v := range vals {
+		s, decoded := decode(reg, v, hiveLen)
+		if !decoded {
+			continue
+		}
+		// The unnamed default value four of the keys carry lands under "". This
+		// layer records what the hive says; the column layer never looks it up.
+		rec.V[valueName(reg, v)] = s
+	}
+	return rec, true
+}
+
+// valueName branches on VALUE_COMP_NAME for the reason nodeName branches on
+// KEY_COMP_NAME. NameLength is checked first so the unnamed default value stays
+// "" rather than decoding an empty buffer.
+func valueName(reg *regparser.Registry, v *regparser.CM_KEY_VALUE) string {
+	if v.NameLength() == 0 {
+		return ""
+	}
+	if v.Flags()&0x0001 != 0 {
+		return v.ValueName()
+	}
+	return utf16le(regparser.ParseSafeArray_byte(reg.Reader,
+		v.Offset+reg.Profile.Off_CM_KEY_VALUE_Name, int(v.NameLength())))
+}
+
+// decode renders one value as a string, or reports that it was skipped.
+//
+// Decoding stops at the string: no SHA-1 substring, no date parsing, no boolean
+// normalisation, no separator rewriting. Those belong to the column layer, and
+// keeping them out is what makes a golden record what the hive says.
+func decode(reg *regparser.Registry, v *regparser.CM_KEY_VALUE, hiveLen int64) (string, bool) {
+	raw := v.DataLength()
+	size := raw & 0x7fffffff
+	// ValueData reaches ParseSafeArray_byte, which issues one ReadAt per byte and
+	// stops only at EOF, so a declared length drives the read whatever the hive
+	// actually holds.
+	if size > maxValueBytes {
+		warn(warnValueSize, "amcache: a value declares %d bytes, over the %d byte cap; "+
+			"the value is dropped", size, maxValueBytes)
+		return "", false
+	}
+	inline := raw&0x80000000 != 0
+
+	switch v.Type() {
+	case regparser.REG_DWORD, regparser.REG_DWORD_BIG_ENDIAN, regparser.REG_QWORD:
+		// ValueData checks only the DECLARED size and then indexes the bytes it
+		// actually read with binary.LittleEndian.Uint32/Uint64. Three shapes make
+		// that index run off the end and panic, and each is one bit flip from the
+		// 8,020 real Size and Usn QWORDs on a Windows 11 hive: a size that does not
+		// match the type, the inline bit set on an eight-byte type (the inline
+		// branch returns exactly four bytes whatever the declaration says), and a
+		// data cell outside the hive (which yields no bytes at all). A big-data
+		// cell is rejected with them: an integer is never stored as big data, and
+		// the segment walk can also produce a short buffer.
+		want := int64(4)
+		if v.Type() == regparser.REG_QWORD {
+			want = 8
+		}
+		if int64(size) != want {
+			warn(warnValueShape, "amcache: an integer value declares %d bytes for a %d byte type; "+
+				"the value is dropped", size, want)
+			return "", false
+		}
+		if inline {
+			if want != 4 {
+				warn(warnValueShape, "amcache: an %d byte integer value is marked inline, "+
+					"which yields 4 bytes; the value is dropped", want)
+				return "", false
+			}
+		} else {
+			cell := reg.Profile.HCELL(reg.Reader, 0x1000+int64(v.Data()))
+			if cell.Signature() == sigDb || cell.Payload()+want > hiveLen {
+				warn(warnValueShape, "amcache: an integer value points at a data cell that cannot "+
+					"hold its %d bytes; the value is dropped", want)
+				return "", false
+			}
+		}
+		return strconv.FormatUint(v.ValueData().Uint64, 10), true
+
+	case regparser.REG_SZ, regparser.REG_EXPAND_SZ:
+		s := v.ValueData().String
+		// The cut is load-bearing, not cosmetic: regparser over-reads every inline
+		// value to four bytes, so 17,223 of 200,517 real string values carry data
+		// after their first NUL, and none carries no NUL at all.
+		if i := strings.IndexByte(s, 0); i >= 0 {
+			s = s[:i]
+		}
+		// The trim is a behavioural choice, not a formality: it alters 182 real
+		// values across the four fixtures, so a golden diff on a whitespace-bearing
+		// value is that choice and not a regression.
+		s = strings.TrimSpace(s)
+		// Cheap insurance. It has never changed a real value -- utf16.Decode already
+		// emits U+FFFD -- and it does not repair a name read with the wrong width.
+		return strings.ToValidUTF8(s, "\uFFFD"), true
+
+	case regparser.REG_MULTI_SZ:
+		// No fixture carries one: Hwids, HWID and COMPID are all REG_SZ. The format
+		// permits it, so the branch exists.
+		parts := v.ValueData().MultiSz
+		out := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if p != "" {
+				out = append(out, p)
+			}
+		}
+		return strings.Join(out, ","), true
+	}
+
+	// REG_BINARY and every unknown type. Expected, not a failure, so no warning.
+	return "", false
 }
 
 // nodeName branches on KEY_COMP_NAME because regparser never consults it:
