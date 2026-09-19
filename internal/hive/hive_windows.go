@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 
 	"golang.org/x/sys/windows"
 	"www.velocidex.com/golang/go-ntfs/parser"
@@ -178,6 +179,33 @@ func hivePath() (dir, path string, err error) {
 		return "", "", fmt.Errorf("amcache: unexpected windows directory %q", dir)
 	}
 	return dir, filepath.Join(dir, `AppCompat\Programs\Amcache.hve`), nil
+}
+
+// Stat reports the hive's modification time and size so the table layer can
+// tell a stale cached parse from a current one without re-reading 14 MiB.
+//
+// It succeeds while the Compatibility Appraiser holds the hive open, which is
+// the exact condition that forces Read onto the raw NTFS route: os.Stat
+// resolves a regular file through GetFileAttributesEx, which takes no handle
+// and so never reaches the share-mode arbitration a CreateFile would
+// (go1.27.1 src/os/stat_windows.go:34-48 -- the CreateFile fallback below it is
+// reached only for a reparse point, and falls back again to a handle-free
+// FindFirstFile on a sharing violation).
+//
+// No context parameter: there is no cancellable operation here to abandon.
+func Stat() (time.Time, int64, error) {
+	_, path, err := hivePath()
+	if err != nil {
+		return time.Time{}, 0, err
+	}
+	// Returned unwrapped, as readPlain does and for the same reason: the caller
+	// classifies fs.ErrNotExist apart from every other failure, and a wrap with
+	// no added fact would only cost it an errors.Is.
+	fi, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}, 0, err
+	}
+	return fi.ModTime(), fi.Size(), nil
 }
 
 // readPlain reads path through the filesystem, refusing anything over limit.
