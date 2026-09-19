@@ -21,8 +21,8 @@ TOOLBIN        := $(CURDIR)/.tools
 GOSEC          := $(TOOLBIN)/gosec-$(GOSEC_VERSION)
 GOVULN         := $(TOOLBIN)/govulncheck-$(GOVULN_VERSION)
 
-.PHONY: all check fmt fmtcheck vet test sec vuln build windows windows-arm64 \
-        testbin dist osq-verify-windows clean
+.PHONY: all check fmt fmtcheck modcheck vet buildcheck test sec vuln build \
+        windows windows-arm64 testbin dist osq-verify-windows clean
 
 all: check build
 
@@ -52,9 +52,11 @@ vet:
 # GOARCH is pinned above rather than inherited: this host is arm64, so a bare
 # GOOS=windows pass never compiled the windows/amd64 target that actually ships.
 #
-# buildcheck compiles what CI cross-builds, without producing artifacts. `vet`
-# type-checks but does not link, so a failure that only appears at link time
-# (a missing symbol behind a build tag) reaches CI otherwise.
+# buildcheck compiles what CI cross-builds, without producing artifacts. It runs
+# the linker, which `vet` does not: vet type-checks each package on its own and
+# never resolves the program as a whole. The gap is narrow -- most tag mistakes
+# are type errors vet already catches -- so this is defence in depth against a
+# release cross-build failing on something no earlier gate linked.
 buildcheck:
 	GOOS=windows GOARCH=amd64 go build -o /dev/null ./...
 	GOOS=windows GOARCH=arm64 go build -o /dev/null ./...

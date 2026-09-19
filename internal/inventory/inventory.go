@@ -166,7 +166,9 @@ func warn(cond int, format string, args ...any) {
 // every other bound here -- no key node is ever reached so the running total
 // stays 0, the chain is linear so the pending stack stays shallow, and depth
 // never exceeds N -- while the walk itself is 2^N frames. Only the visited set
-// stops that, and it stops it on the second pop.
+// stops that: the chain's own cells are distinct, so it does not fire until the
+// walk revisits one, which is early enough to keep the cost flat and is not the
+// second pop.
 func indexSlots(reg *regparser.Registry, off uint32, limit int) (int, error) {
 	type frame struct {
 		off   uint32
