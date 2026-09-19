@@ -27,6 +27,7 @@ const (
 	kEpoch             // a DWORD that is already unix seconds
 	kMulti             // comma-separated list, re-joined after trimming
 	kSha1              // the 40 hex characters after a 44-character value's 0000 prefix
+	kLower             // a value lowercased, as opposed to kKeyLower's subkey name
 
 	// The four key-derived kinds read the subkey name, not a value, so their
 	// src is empty.
@@ -245,7 +246,14 @@ var specs = []spec{
 			// so a rewrite gains nothing and would corrupt a value that legitimately
 			// contained a forward slash.
 			{name: "parent_id", typ: table.ColumnTypeText, src: "ParentId", kind: kText},
-			{name: "container_id", typ: table.ColumnTypeText, src: "ContainerId", kind: kText, push: true},
+			// Lowercased rather than plain text, which is the twelfth kind and the
+			// only decoder this file gained after the spec was written. All 464
+			// values here and all 84 container subkey names are already lowercase,
+			// so it changes nothing measurable -- but the container side is
+			// lowercased out of its subkey by kKeyLower, and leaving this side raw
+			// would make the join between the two tables depend on a future hive
+			// agreeing with today's. A GUID is case-insensitive, so nothing is lost.
+			{name: "container_id", typ: table.ColumnTypeText, src: "ContainerId", kind: kLower, push: true},
 			{name: "install_state", typ: table.ColumnTypeInteger, src: "InstallState", kind: kInt},
 			// A DN_* devnode status word, so bigint despite a small observed range:
 			// only bits 0x20 and 0x40 are ever set on the reference hives, but
