@@ -156,9 +156,17 @@ func warn(cond int, format string, args ...any) {
 // Second, CM_KEY_INDEX.Subkeys recurses into child indexes with no depth or
 // visited tracking, so an ri that reaches itself recurses until the goroutine
 // stack overflows. That is a fatal error and not a panic: recover cannot catch
-// it, and the SYSTEM process dies. A visited set alone does not stop linear
-// nesting and a depth cap alone does not cheaply stop a tight cycle, so both are
-// here.
+// it, and the SYSTEM process dies.
+//
+// The depth cap and the visited set bound different shapes and neither
+// subsumes the other. The depth cap bounds path LENGTH, so it alone stops both
+// linear nesting and a tight self-reference, which terminates after
+// maxIndexDepth pops. What it does not bound is path COUNT: a chain of N
+// distinct index cells, each of whose elements point at the next, stays inside
+// every other bound here -- no key node is ever reached so the running total
+// stays 0, the chain is linear so the pending stack stays shallow, and depth
+// never exceeds N -- while the walk itself is 2^N frames. Only the visited set
+// stops that, and it stops it on the second pop.
 func indexSlots(reg *regparser.Registry, off uint32, limit int) (int, error) {
 	type frame struct {
 		off   uint32
