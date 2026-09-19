@@ -21,16 +21,23 @@ TOOLBIN        := $(CURDIR)/.tools
 GOSEC          := $(TOOLBIN)/gosec-$(GOSEC_VERSION)
 GOVULN         := $(TOOLBIN)/govulncheck-$(GOVULN_VERSION)
 
-.PHONY: all check fmt fmtcheck vet test sec vuln build windows windows-arm64 \
-        testbin dist osq-verify-windows clean
+.PHONY: all check fmt fmtcheck modcheck vet buildcheck test sec vuln build \
+        windows windows-arm64 testbin dist osq-verify-windows clean
 
 all: check build
 
 ## ---- quality gates (run before every commit) ----
-check: fmtcheck vet sec vuln test
+check: fmtcheck modcheck vet buildcheck sec vuln test
 
 fmtcheck:
 	@out="$$(gofmt -l .)"; if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
+
+# CI runs these two and `check` did not, so a green gate here could still push a
+# red run there -- which breaks the only thing the pre-commit contract in
+# CLAUDE.md rests on. Both are near-instant and need no network.
+modcheck:
+	go mod verify
+	go mod tidy -diff
 
 fmt:
 	gofmt -w .
@@ -39,14 +46,52 @@ fmt:
 # sees the //go:build windows files, which are most of the filesystem surface.
 vet:
 	go vet ./...
-	GOOS=windows go vet ./...
+	GOOS=windows GOARCH=amd64 go vet ./...
+	GOOS=windows GOARCH=arm64 go vet ./...
+
+# GOARCH is pinned above rather than inherited: this host is arm64, so a bare
+# GOOS=windows pass never compiled the windows/amd64 target that actually ships.
+#
+# buildcheck compiles what CI cross-builds, without producing artifacts. It runs
+# the linker, which `vet` does not: vet type-checks each package on its own and
+# never resolves the program as a whole. The gap is narrow -- most tag mistakes
+# are type errors vet already catches -- so this is defence in depth against a
+# release cross-build failing on something no earlier gate linked.
+buildcheck:
+	GOOS=windows GOARCH=amd64 go build -o /dev/null ./...
+	GOOS=windows GOARCH=arm64 go build -o /dev/null ./...
 
 # -race requires cgo and so cannot cross-compile; host-only by necessity.
 # tests/ is gitignored and absent on a fresh clone, hence the guard. The guard is
 # an if and not `test -d tests && go test ... || echo`: in that form the echo
 # also runs when go test fails, which leaves the recipe exiting 0 on a red suite.
+#
+# Two invocations, and the split is deliberate. TestFuzzParse is sharded over
+# NumCPU workers and runs 4,400 parses of each fixture: about 22 s unraced
+# against 5 m 25 s under -race, which is the difference between a gate that runs
+# before every commit and one that gets skipped. The parser spawns no goroutines
+# of its own, so the only race that harness can find is package-level mutable
+# state in internal/inventory -- which research finding F-13 already turns into a
+# hard design rule (no package-level mutables, sync.Once for the warning dedupe).
+#
+# That left a hole worth naming: with the fuzz skipped, no remaining test parsed
+# from two goroutines at once, so -race on the first invocation had nothing in
+# this package to observe and the one test that did parse concurrently was the
+# one deliberately built without the detector. TestParseIsRaceFree exists to
+# close it -- it parses from NumCPU goroutines, runs in the raced invocation,
+# and costs milliseconds.
+#
+# The two filters are one pair: the -skip and the -run must both keep matching
+# the TestFuzz prefix in tests/inventory_fuzz_test.go, or the fuzz either runs
+# twice (once raced) or not at all.
+#
+# && , never ; -- a failure in the first invocation must not be overwritten by a
+# second that succeeds. That is CR-05's defect one command over.
 test:
-	@if [ -d tests ]; then go test -race -count=1 ./...; else echo "tests/ absent (gitignored)"; fi
+	@if [ -d tests ]; then \
+	  go test -race -count=1 -skip 'TestFuzz' ./... && \
+	  go test -count=1 -run 'TestFuzz' ./tests; \
+	else echo "tests/ absent (gitignored)"; fi
 
 # GOTOOLCHAIN and the cleared GOOS/GOARCH are both load-bearing. A govulncheck
 # built by a Go older than this module's `go 1.27.1` directive hard-fails with
