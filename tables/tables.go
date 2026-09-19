@@ -19,12 +19,15 @@ package tables
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/karmine05/amcache/internal/hive"
 	"github.com/karmine05/amcache/internal/inventory"
+	"github.com/osquery/osquery-go/plugin/table"
 )
 
 const (
@@ -222,4 +225,146 @@ func index(inv *inventory.Snapshot) map[string]map[string][]int32 {
 		}
 	}
 	return idx
+}
+
+// selected returns the record indices a query's constraints can narrow to, or
+// nil for every record.
+//
+// A superset is always a correct answer because SQLite re-filters what we
+// return; a subset never is. Every branch that cannot be sure returns more rows
+// rather than fewer.
+func selected(qc table.QueryContext, idx map[string]map[string][]int32, tbl string) []int32 {
+	var out []int32
+	narrowed := false
+
+	for name, cl := range qc.Constraints {
+		byVal, ok := idx[tbl+"\x00"+name]
+		if !ok {
+			// Constraints arrive for columns we never flagged: osquery promotes
+			// every extension column with default options to INDEX, which is also
+			// the only reason any constraint reaches us at all. An unflagged
+			// column is one SQLite will filter itself, not one that cannot happen.
+			continue
+		}
+
+		var hits []int32
+		usable := false
+		for _, cst := range cl.Constraints {
+			if cst.Operator != table.OperatorEquals || cst.Expression == "" || len(cst.Expression) > maxExprLen {
+				// LIKE, GLOB and the comparisons cannot be answered from an equality
+				// index, and TEXT columns never receive the comparisons anyway.
+				continue
+			}
+			usable = true
+			// The whole exposure of a constraint in this extension: lowercased,
+			// bounded above, and used as a map key. It reaches no filesystem call,
+			// no format string and nothing regparser sees -- hive.Read takes no
+			// parameter beyond a context, so there is no argument for it to become.
+			hits = append(hits, byVal[strings.ToLower(cst.Expression)]...)
+		}
+		if !usable {
+			continue
+		}
+
+		// Union within a column, never intersection. SQLite expands IN (a, b) into
+		// one xFilter call per value today, but a future batched form would arrive
+		// as two equalities in one list, and the union is the only reading correct
+		// under both. Intersecting would return zero rows for every IN query --
+		// an IOC sweep over two hundred hashes silently finding nothing, which is
+		// the failure this table exists to prevent.
+		hits = sortUnique(hits)
+		if !narrowed {
+			out, narrowed = hits, true
+			continue
+		}
+		// Across columns is an AND.
+		out = intersect(out, hits)
+	}
+
+	if !narrowed {
+		return nil
+	}
+	if out == nil {
+		// A usable constraint that matched nothing selects no records. Returning
+		// nil here would mean every record instead, which is the difference
+		// between an empty answer and a wrong one.
+		out = []int32{}
+	}
+	return out
+}
+
+// sortUnique also dedupes, so a repeated value in an IN list cannot make the
+// same record appear twice in the result.
+func sortUnique(v []int32) []int32 {
+	slices.Sort(v)
+	return slices.Compact(v)
+}
+
+func intersect(a, b []int32) []int32 {
+	out := make([]int32, 0, min(len(a), len(b)))
+	for i, j := 0, 0; i < len(a) && j < len(b); {
+		switch {
+		case a[i] < b[j]:
+			i++
+		case a[i] > b[j]:
+			j++
+		default:
+			out = append(out, a[i])
+			i++
+			j++
+		}
+	}
+	return out
+}
+
+// generator returns one table's Generate.
+func (c *cache) generator(s spec) table.GenerateFunc {
+	return func(ctx context.Context, qc table.QueryContext) (rows []map[string]string, err error) {
+		// First statement, named returns, in fleet's own shape. A returned error
+		// becomes Status{Code:1} and then SQLITE_ERROR: the query fails and the
+		// process lives. An escaped panic ends a SYSTEM process serving every
+		// other table, because nothing above this recovers.
+		defer func() {
+			if r := recover(); r != nil {
+				logf("amcache: %s: recovered from panic: %v", s.table, r)
+				rows, err = nil, fmt.Errorf("%s: recovered from panic: %v", s.table, r)
+			}
+		}()
+
+		// Wraps the cache acquisition as well as the row build, which is what
+		// makes the channel lock above worth having.
+		ctx, cancel := context.WithTimeout(ctx, generateTimeout)
+		defer cancel()
+
+		snap, err := c.get(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", s.table, err)
+		}
+		recs := snap.inv.Keys[s.key]
+		if len(recs) == 0 {
+			// A key this host does not write, or a legacy hive. Zero rows.
+			return nil, nil
+		}
+		return rowsFor(ctx, s, recs, selected(qc, snap.idx, s.table))
+	}
+}
+
+// All returns the seven table plugins, reading the live hive.
+func All() []*table.Plugin {
+	return New(hive.Read, hive.Stat)
+}
+
+// New returns the seven table plugins over the given hive accessors, sharing
+// one cache between them.
+//
+// Two closures rather than one because the freshness path is otherwise
+// untestable: hive.Stat returns errors.ErrUnsupported on every platform a test
+// can run on.
+func New(read func(context.Context) (hive.Result, error), stat func() (time.Time, int64, error)) []*table.Plugin {
+	c := &cache{read: read, stat: stat, sem: make(chan struct{}, 1)}
+	out := make([]*table.Plugin, 0, len(specs))
+	for _, s := range specs {
+		out = append(out, table.NewPlugin(s.table, s.columnDefs(), c.generator(s)))
+	}
+	return out
 }
