@@ -12,6 +12,7 @@
 package tables
 
 import (
+	"context"
 	"encoding/hex"
 	"log"
 	"strconv"
@@ -259,4 +260,63 @@ func cell(c col, rec inventory.Record) (string, bool) {
 	default: // kText
 		return s, true
 	}
+}
+
+// rowsFor builds one row per selected record. sel nil means every record.
+//
+// Every declared column is present in every row, with "" when the value is
+// absent -- not usually, always. osquery renders a missing key as SQL NULL and
+// logs a line per row while doing it, which on a 16,850-row table with several
+// sparse columns is a verbose-log flood for nothing. What an empty cell looks
+// like in SQL still depends on the column type: text renders the empty string,
+// integer and bigint render NULL, which is why the schema notes and every
+// numeric README predicate have to speak for their own type rather than quote
+// one convention.
+//
+// No row cap and no truncation. A forensic table that silently drops rows fails
+// the investigation with no way for the operator to know; the 1 MB Fleet
+// log-line limit is documented instead of enforced.
+func rowsFor(ctx context.Context, s spec, recs []inventory.Record, sel []int32) ([]map[string]string, error) {
+	n := len(recs)
+	if sel != nil {
+		n = len(sel)
+	}
+	// Pre-sized because the allocation profile here is the opposite of the
+	// obvious one: the widest row in the extension is in a 43-row table, one of
+	// whose hwids values is 497,663 bytes on its own, and the 16,850-row table's
+	// widest row is under 800.
+	rows := make([]map[string]string, 0, n)
+	var failed map[string]int
+
+	for i := 0; i < n; i++ {
+		if i%4096 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		rec := recs[i]
+		if sel != nil {
+			// The indices are built over this same slice by the caller. A stale one
+			// panics here rather than silently serving the wrong rows, and Generate's
+			// recover turns that into an error the operator sees.
+			rec = recs[sel[i]]
+		}
+		row := make(map[string]string, len(s.cols))
+		for _, c := range s.cols {
+			v, ok := cell(c, rec)
+			if !ok {
+				if failed == nil {
+					failed = make(map[string]int)
+				}
+				failed[c.name]++
+			}
+			row[c.name] = v
+		}
+		rows = append(rows, row)
+	}
+
+	for name, count := range failed {
+		warnDecode(s.table, name, count)
+	}
+	return rows, nil
 }
