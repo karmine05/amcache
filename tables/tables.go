@@ -99,6 +99,11 @@ func warnStat(err error) {
 	})
 }
 
+// errParseTooSlow marks the deadline this package imposes on itself, so the
+// cache can remember a hive too slow to load while still forgetting a caller
+// that went away. Both surface as context.DeadlineExceeded.
+var errParseTooSlow = errors.New("amcache: load exceeded the generate deadline")
+
 // get returns the shared snapshot, parsing the hive if what is held is missing,
 // expired or stale.
 func (c *cache) get(ctx context.Context) (*snapshot, error) {
@@ -136,10 +141,19 @@ func (c *cache) get(ctx context.Context) (*snapshot, error) {
 func (c *cache) load(ctx context.Context) error {
 	snap, err := c.parse(ctx)
 	if err != nil && (ctx.Err() != nil ||
-		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) &&
+		!errors.Is(context.Cause(ctx), errParseTooSlow) {
 		// One cancelled query would otherwise fail every query for five minutes.
 		// Every other failure is remembered on purpose: it is what stops a host
 		// whose hive cannot be read from attempting a raw volume read per query.
+		//
+		// Our own generateTimeout is the exception inside the exception. A
+		// caller going away says nothing about the hive, but a load that cannot
+		// finish in 30 s is a property of this host, and it is the single most
+		// expensive failure there is -- a raw volume read and a full parse, per
+		// query, forever, because the one failure worth remembering was the one
+		// being discarded. context.Cause is what separates the two; ctx.Err
+		// reports DeadlineExceeded for both.
 		return err
 	}
 
@@ -333,7 +347,10 @@ func (c *cache) generator(s spec) table.GenerateFunc {
 
 		// Wraps the cache acquisition as well as the row build, which is what
 		// makes the channel lock above worth having.
-		ctx, cancel := context.WithTimeout(ctx, generateTimeout)
+		//
+		// The cause is load-bearing, not decoration: it is the only thing that
+		// tells the cache our own deadline apart from a caller who went away.
+		ctx, cancel := context.WithTimeoutCause(ctx, generateTimeout, errParseTooSlow)
 		defer cancel()
 
 		snap, err := c.get(ctx)
