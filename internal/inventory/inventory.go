@@ -380,7 +380,8 @@ func valueName(reg *regparser.Registry, v *regparser.CM_KEY_VALUE) string {
 		return ""
 	}
 	if v.Flags()&0x0001 != 0 {
-		return v.ValueName()
+		return latin1(regparser.ParseSafeArray_byte(reg.Reader,
+			v.Offset+reg.Profile.Off_CM_KEY_VALUE_Name, int(v.NameLength())))
 	}
 	return utf16le(regparser.ParseSafeArray_byte(reg.Reader,
 		v.Offset+reg.Profile.Off_CM_KEY_VALUE_Name, int(v.NameLength())))
@@ -441,7 +442,14 @@ func decode(reg *regparser.Registry, v *regparser.CM_KEY_VALUE, hiveLen int64) (
 		return strconv.FormatUint(v.ValueData().Uint64, 10), true
 
 	case regparser.REG_SZ, regparser.REG_EXPAND_SZ:
-		s := v.ValueData().String
+		// Decoded here rather than read from ValueData().String for the reason
+		// utf16le exists: regparser's UTF16BytesToUTF8 has its BOM branches
+		// inverted, so a value whose first code unit is U+FEFF comes back
+		// byte-swapped end to end -- and byte-swapped UTF-16 is still valid
+		// UTF-8, so ToValidUTF8 below cannot catch it. The appraiser copies PE
+		// metadata into the hive verbatim, so that first code unit is attacker
+		// controlled.
+		s := utf16le(v.ValueData().Data)
 		// The cut is load-bearing, not cosmetic: regparser over-reads every inline
 		// value to four bytes, so 17,223 of 200,517 real string values carry data
 		// after their first NUL, and none carries no NUL at all.
@@ -459,12 +467,19 @@ func decode(reg *regparser.Registry, v *regparser.CM_KEY_VALUE, hiveLen int64) (
 	case regparser.REG_MULTI_SZ:
 		// No fixture carries one: Hwids, HWID and COMPID are all REG_SZ. The format
 		// permits it, so the branch exists.
-		parts := v.ValueData().MultiSz
-		out := make([]string, 0, len(parts))
-		for _, p := range parts {
-			if p != "" {
+		// Split here rather than reading ValueData().MultiSz, which renders each
+		// segment through the same inverted-BOM decode as REG_SZ above.
+		data := v.ValueData().Data
+		out := make([]string, 0, 4)
+		for i := 0; i+1 < len(data); {
+			j := i
+			for j+1 < len(data) && !(data[j] == 0 && data[j+1] == 0) {
+				j += 2
+			}
+			if p := utf16le(data[i:j]); p != "" {
 				out = append(out, p)
 			}
+			i = j + 2
 		}
 		return strings.Join(out, ","), true
 	}
@@ -473,18 +488,34 @@ func decode(reg *regparser.Registry, v *regparser.CM_KEY_VALUE, hiveLen int64) (
 	return "", false
 }
 
-// nodeName branches on KEY_COMP_NAME because regparser never consults it:
-// Name reads NameLength raw bytes whatever the flag says, so an uncompressed
-// name otherwise comes back as UTF-16 reinterpreted as a Go string, which
+// nodeName branches on KEY_COMP_NAME because regparser never consults it: Name
+// reads NameLength raw bytes whatever the flag says, so an uncompressed name
+// otherwise comes back as UTF-16 reinterpreted as a Go string, which
 // ToValidUTF8 does not repair because interleaved NULs are valid UTF-8. Every
-// name on every fixture is compressed, so this branch is reachable today only
-// from corrupt input -- one bit clears 0x20 -- and from a future non-ASCII host.
+// name on every fixture is compressed, so the uncompressed branch is reachable
+// today only from corrupt input -- one bit clears 0x20 -- and from a future
+// non-ASCII host.
 func nodeName(reg *regparser.Registry, n *regparser.CM_KEY_NODE) string {
 	if n.Flags()&0x20 != 0 {
-		return n.Name()
+		return latin1(regparser.ParseSafeArray_byte(reg.Reader,
+			n.Offset+reg.Profile.Off_CM_KEY_NODE__Name, int(n.NameLength())))
 	}
 	return utf16le(regparser.ParseSafeArray_byte(reg.Reader,
 		n.Offset+reg.Profile.Off_CM_KEY_NODE__Name, int(n.NameLength())))
+}
+
+// latin1 decodes a compressed name. The compressed form is one byte per
+// character over the Latin-1 range, not ASCII: Windows sets the flag whenever
+// every character is <= 0xFF, so an accented character is stored as a single
+// byte >= 0x80 and a raw cast leaves it as invalid UTF-8 in Name, which is the
+// identity column every table keys on. Reachable from any non-English host, not
+// only from a hostile hive.
+func latin1(b []byte) string {
+	r := make([]rune, len(b))
+	for i, c := range b {
+		r[i] = rune(c)
+	}
+	return string(r)
 }
 
 // utf16le decodes with unicode/utf16 rather than regparser's UTF16BytesToUTF8,
