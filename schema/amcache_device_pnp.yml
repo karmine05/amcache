@@ -52,7 +52,8 @@ columns:
     required: false
   - name: class
     type: text
-    description: Device setup class, for example USB or DiskDrive.
+    description: Device setup class, stored lowercase, for example usb or diskdrive. Compare
+      through UPPER() or LOWER() rather than matching the casing Windows shows elsewhere.
     required: false
   - name: class_guid
     type: text
@@ -60,7 +61,9 @@ columns:
     required: false
   - name: enumerator
     type: text
-    description: Bus the device was enumerated on, for example USB, USBSTOR, PCI, BTH or SWD.
+    description: Bus the device was enumerated on, stored lowercase, for example usb, usbstor, pci,
+      bth or swd. Compare through UPPER() or LOWER() rather than matching the casing Windows shows
+      elsewhere.
     required: false
   - name: manufacturer
     type: text

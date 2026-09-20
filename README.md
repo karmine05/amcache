@@ -44,7 +44,8 @@ arbitrary hive file at all.
 
 This extension makes that file queryable in place, while it is locked, without
 a reboot and without taking the host offline. The 02:00 question becomes a live
-query that returns in under a second per host:
+query, sub-second per host once the hive is parsed and cached, and a few seconds
+on the first query of a locked hive:
 
 ```sql
 SELECT path, sha1, last_write_time FROM amcache_application_files
@@ -178,8 +179,9 @@ WHERE sha1 IN (
 );
 ```
 
-`sha1` is an indexed column. An `IN` list of a few thousand IOCs is still one
-in-memory pass.
+`sha1` is an indexed column. SQLite expands an `IN` list into one lookup per
+value, so a few thousand IOCs are a few thousand index probes against a single
+cached parse of the hive, not a few thousand reads of it.
 
 ### 4. Executables running from user-writable directories
 
@@ -264,8 +266,8 @@ driver Amcache remembers and the live driver list no longer reports.
 SELECT c.friendly_name, c.manufacturer, c.model_name,
        p.device_instance_id, p.first_install_time, p.install_time, c.connected
 FROM amcache_device_pnp p
-JOIN amcache_device_containers c ON p.container_id = c.container_id
-WHERE p.enumerator = 'USBSTOR'
+LEFT JOIN amcache_device_containers c ON p.container_id = c.container_id
+WHERE UPPER(p.enumerator) = 'USBSTOR'
 ORDER BY p.first_install_time DESC;
 ```
 
@@ -307,9 +309,10 @@ remembered for the rest of the cache window instead of being retried per query.
 
 `amcache_application_files` is the large one and can carry tens of thousands of
 rows. A scheduled `SELECT *` against it will produce log lines larger than
-Fleet's 1 MB per-line limit; filter on `path`, `sha1`, `program_id` or
-`last_write_time` instead. Those four are pushed down and evaluated before rows
-are built.
+Fleet's 1 MB per-line limit; filter on `path`, `sha1` or `program_id` instead.
+Those three are pushed down and evaluated before rows are built. An equality on
+any other column, `last_write_time` included, still narrows the result but is
+applied by SQLite after every row has been built.
 
 ## EDR note
 

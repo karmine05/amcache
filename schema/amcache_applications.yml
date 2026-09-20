@@ -26,7 +26,7 @@ examples: |-
   ```
   SELECT program_id, name, version, source, install_time
   FROM amcache_applications
-  WHERE publisher = '' AND source NOT IN ('Msi', 'Appx');
+  WHERE publisher = '' AND source NOT IN ('Msi', 'AppxPackage');
   ```
 columns:
   - name: program_id
@@ -54,7 +54,7 @@ columns:
   - name: source
     type: text
     description: Where the appraiser learned about the application, for example AddRemoveProgram,
-      Msi or Appx.
+      Msi or AppxPackage.
     required: false
   - name: store_app_type
     type: text
