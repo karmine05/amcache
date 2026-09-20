@@ -38,9 +38,11 @@ jobs:
         # gitignored, so `make test` prints and passes on a runner.
         run: make check
 
-      - name: build both windows architectures at the tag version
-        # The tag drives -X main.version, so v0.1.0 stamps 0.1.0.
-        run: make windows windows-arm64 VERSION="${GITHUB_REF_NAME#v}"
+      - name: build the windows binary at the tag version
+        # The tag drives -X main.version, so v0.1.0 stamps 0.1.0. arm64 is
+        # cross-built by ci.yml and `make buildcheck`, but has never executed on
+        # a host, so it is not published beside a binary that has.
+        run: make windows VERSION="${GITHUB_REF_NAME#v}"
 
       - name: record whether the signing certificate is available
         id: cert
@@ -88,8 +90,8 @@ jobs:
         env:
           WIN_CERT_PASSWORD: ${{ secrets.WIN_CERT_PASSWORD }}
         run: |
-          signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f "$env:RUNNER_TEMP\cert.pfx" /p "$env:WIN_CERT_PASSWORD" build\amcache_windows.ext.exe build\amcache_windows_arm64.ext.exe
-          signtool verify /pa build\amcache_windows.ext.exe build\amcache_windows_arm64.ext.exe
+          signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f "$env:RUNNER_TEMP\cert.pfx" /p "$env:WIN_CERT_PASSWORD" build\amcache_windows.ext.exe
+          signtool verify /pa build\amcache_windows.ext.exe
 
       - name: delete the decoded certificate
         # Runs even when signing failed: the private key must not outlive the job.

@@ -146,8 +146,8 @@ testbin:
 # The artifacts are named, not globbed: `make testbin` writes
 # build/amcache_tests.exe into the same directory and nothing cleans it, so a
 # glob puts a test binary in the supply-chain root anyone deploying this reads.
-dist: windows windows-arm64
-	cd $(BUILD) && shasum -a 256 $(BINARY).ext.exe $(BINARY)_arm64.ext.exe > SHA256SUMS
+dist: windows
+	cd $(BUILD) && shasum -a 256 $(BINARY).ext.exe > SHA256SUMS
 	@echo "checksums:" && cat $(BUILD)/SHA256SUMS
 
 VERIFY_SQL := SELECT count(*) AS n FROM amcache_application_files
