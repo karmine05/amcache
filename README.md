@@ -107,8 +107,12 @@ where it was observed.
 ```sh
 make windows          # build/amcache_windows.ext.exe
 make windows-arm64    # build/amcache_windows_arm64.ext.exe
-make dist             # both, plus SHA256SUMS
+make dist             # amd64, plus SHA256SUMS
 ```
+
+Releases carry amd64 only. arm64 cross-builds in CI and in `make check`, so it
+cannot silently stop compiling, but it has never run on a host and is not
+published beside a binary that has.
 
 Both are built `CGO_ENABLED=0` with `-trimpath -ldflags "-s -w"`, so the
 binaries are reproducible and carry no local paths. `make check` runs the full
@@ -117,13 +121,28 @@ architectures, gosec, govulncheck, and the test suite.
 
 ## Install
 
-Load it under fleetd by appending the binary's absolute path to
-`C:\Program Files\Orbit\extensions.load`, then restarting the agent:
+Under fleetd, ship it through TUF. fleetd rewrites
+`C:\Program Files\Orbit\extensions.load` wholesale from the configuration Fleet
+returns, and truncates it when Fleet returns no extensions, so a line appended
+by hand survives only until the next config refresh:
+
+```sh
+fleetctl updates add --name extensions/amcache_windows --platform windows \
+  --target ./amcache_windows.ext.exe --version 0.1.0
+```
+
+Under a plain osquery install, append the binary's absolute path to
+osquery's own autoload file and restart the daemon:
 
 ```powershell
-Add-Content "C:\Program Files\Orbit\extensions.load" "C:\Program Files\amcache\amcache_windows.ext.exe"
-Restart-Service 'Fleet osquery'
+Add-Content "C:\Program Files\osquery\extensions.load" "C:\Program Files\amcache\amcache_windows.ext.exe"
+Restart-Service osqueryd
 ```
+
+osquery refuses to autoload a binary whose file or parent directory is
+writable by a non-administrator, so place it somewhere Administrators own with
+inheritance disabled. `--allow_unsafe` bypasses that check and is a development
+shortcut, not a deployment flag.
 
 Confirm it is up:
 
