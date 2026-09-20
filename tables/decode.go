@@ -23,9 +23,11 @@ import (
 	"github.com/karmine05/amcache/internal/inventory"
 )
 
-// The package logs through this one variable so a vendoring host can point it
-// at its own sink by assigning once, before any goroutine exists.
-var logf = log.Printf
+// A function, not a variable holding log.Printf: go vet only infers a printf
+// wrapper from a declared function, and these format strings carry values the
+// appraiser copied out of attacker-supplied PE metadata. Fleet replaces the one
+// body with zerolog when it vendors the package.
+func logf(format string, args ...any) { log.Printf(format, args...) }
 
 // One decode-failure line per column per process.
 //
