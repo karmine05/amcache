@@ -344,6 +344,16 @@ one Windows version: it was observed on every host examined, client and server.
 Treat a populated `link_time` as evidence and an empty one as absence of
 evidence, never as a zero.
 
+On Windows 11 a record in `amcache_application_files` usually carries a path or
+a hash, not both. Roughly three in four rows are hash-only stubs with no path,
+name, size or version metadata; of the rows that do carry a path, most carry no
+hash; and fewer than one in ten rows carry both. Windows 10 and Windows Server
+2022 populate both on every record. Three consequences worth knowing before you
+rely on a result: a hash sweep like example 3 returns rows whose `path` is empty,
+a path lookup like example 2 returns a row whose `sha1` is empty, and the hash
+comparison in example 6 can only reach the small minority of rows carrying both.
+None of this is a fault in the extension; it is what the appraiser wrote.
+
 Only the modern hive format is parsed: Windows 10 1809 and later, Windows 11,
 Windows Server 2022 and later. A pre-Windows-8 hive carrying `Root\File` and
 `Root\Programs` yields zero rows and one log line rather than an error.

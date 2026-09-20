@@ -19,9 +19,11 @@ notes: |-
   A row means the appraiser saw the file. It is not evidence that the file was executed.
 
   On Windows 11 roughly three quarters of the rows carry only a program id, a hash and a write time,
-  with no path, name, size or version metadata at all. That is normal appraiser behaviour on that
-  family and not a fault in this extension. Windows 10 and Windows Server 2022 populate most columns
-  on most rows.
+  with no path, name, size or version metadata at all, and most of the remaining rows carry a path
+  but no hash, so fewer than one row in ten carries both. A query that joins or filters on path and
+  reports sha1, or the reverse, therefore reaches a small minority of the table on that family. That
+  is normal appraiser behaviour and not a fault in this extension. Windows 10 and Windows Server 2022
+  populate both on every record and most other columns on most rows.
 
   This table can hold tens of thousands of rows, so a scheduled SELECT * will exceed Fleet's 1 MB
   per log line and truncate. Constrain on program_id, sha1 or last_write_time. Those are populated
