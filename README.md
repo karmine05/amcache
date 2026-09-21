@@ -266,6 +266,14 @@ WHERE a.result != 'trusted'
   AND f.path NOT LIKE 'c:\windows\%';
 ```
 
+osquery's `authenticode` table logs a warning and emits no row for a file it
+cannot verify, so the join silently excludes those paths. The usual case is
+Store apps under `C:\Program Files\WindowsApps`: the executables carry no
+embedded Authenticode signature (trust is carried by the package signature),
+so `CryptQueryObject` finds nothing and the table reports
+`Failed to query the Authenticode signature information`. Those warnings are
+harmless; the rows returned are the real untrusted hits.
+
 ### 8. Bring-your-own-vulnerable-driver
 
 ```sql
