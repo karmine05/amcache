@@ -263,16 +263,27 @@ SELECT f.path, f.sha1, a.result
 FROM amcache_application_files f
 JOIN authenticode a ON a.path = f.path
 WHERE a.result != 'trusted'
+  AND f.path != ''
   AND f.path NOT LIKE 'c:\windows\%';
 ```
 
 osquery's `authenticode` table logs a warning and emits no row for a file it
 cannot verify, so the join silently excludes those paths. The usual case is
 Store apps under `C:\Program Files\WindowsApps`: the executables carry no
-embedded Authenticode signature (trust is carried by the package signature),
-so `CryptQueryObject` finds nothing and the table reports
-`Failed to query the Authenticode signature information`. Those warnings are
-harmless; the rows returned are the real untrusted hits.
+embedded Authenticode signature, because trust is carried by the package
+catalog. osquery redirects to that catalog to verify the file, then reads the
+certificate back with a flag that accepts an embedded signature only, so the
+read fails on the catalog and the table reports `Failed to query the
+Authenticode signature information`.
+
+The warnings are noise. The omission is not: osquery drops the row after the
+verdict is already decided, so a catalog-signed binary that verified as
+distrusted or untrusted never reaches the output either. Treat a returned row
+as a real hit and an absent path as unknown rather than clean. A file carrying
+no signature at all is the case that does survive, as `result = 'missing'`.
+
+The `f.path != ''` guard matters on Windows 11, where most records carry a hash
+and no path. Without it osquery logs `Empty path received` once per such record.
 
 ### 8. Bring-your-own-vulnerable-driver
 
