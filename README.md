@@ -263,8 +263,26 @@ SELECT f.path, f.sha1, a.result
 FROM amcache_application_files f
 JOIN authenticode a ON a.path = f.path
 WHERE a.result != 'trusted'
+  AND f.path != ''
   AND f.path NOT LIKE 'c:\windows\%';
 ```
+
+A file carrying no signature at all comes back as `result = 'missing'`, which is
+the row this query exists to surface. The `f.path != ''` guard matters on
+Windows 11, where most records carry a hash and no path; without it osquery logs
+`Empty path received` once per such record.
+
+Expect osquery to log `authenticode.cpp` warnings while this runs, one per file:
+`Failed to query the Authenticode signature information`. They come from
+osquery's own table, not from this extension, and the query is still correct.
+osquery redirects a catalog-signed file to its `.cat` file and then reads the
+certificate with a flag that accepts only an embedded signature, so the read
+fails on the catalog. Everything signed that way -- MSIX packages under
+`c:\program files\windowsapps\`, inbox binaries signed through `CatRoot` -- is
+warned about and then dropped from the result set. Those files had already
+verified by the time the certificate read failed, so the rows you lose are ones
+this query would have filtered out anyway. The consequence worth remembering is
+that a path absent from this output is not evidence that it is clean.
 
 ### 8. Bring-your-own-vulnerable-driver
 
