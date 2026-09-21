@@ -1,7 +1,15 @@
 # amcache
 
-An osquery extension that reads `C:\Windows\AppCompat\Programs\Amcache.hve` on a
-live Windows host and serves it as seven SQL tables.
+A Fleet and osquery extension that reads
+`C:\Windows\AppCompat\Programs\Amcache.hve` on a live Windows host and serves it
+as seven SQL tables.
+
+It is built for [Fleet](https://fleetdm.com): the tables follow Fleet's schema
+conventions, `schema/` ships the seven YAML files Fleet's documentation merger
+consumes, and the package is laid out so Fleet can vendor it into
+`fleetdm/fleet` as `orbit/pkg/table/amcache` (fleetdm/fleet#31103). It is a
+plain osquery extension underneath, so it also loads under any osquery install
+that is not managed by Fleet.
 
 Amcache is the Microsoft Compatibility Appraiser's inventory of the machine:
 SHA-1 and full path for executables it has seen, installed programs, driver
