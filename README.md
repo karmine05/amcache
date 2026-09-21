@@ -4,10 +4,10 @@ A Fleet and osquery extension that reads
 `C:\Windows\AppCompat\Programs\Amcache.hve` on a live Windows host and serves it
 as seven SQL tables.
 
-It is built for [Fleet](https://fleetdm.com): the tables follow Fleet's schema
+It's built for [Fleet](https://fleetdm.com): the tables follow Fleet's schema
 conventions, `schema/` ships the seven YAML files Fleet's documentation merger
 consumes, and the package is laid out so Fleet can vendor it into
-`fleetdm/fleet` as `orbit/pkg/table/amcache` (fleetdm/fleet#31103). It is a
+`fleetdm/fleet` as `orbit/pkg/table/amcache` (fleetdm/fleet#31103). It's a
 plain osquery extension underneath, so it also loads under any osquery install
 that is not managed by Fleet.
 
@@ -35,10 +35,10 @@ A detection fires at 02:00: a hash your intel feed flagged an hour ago. You
 need to know which machines in a fleet of twelve thousand have ever run it, and
 you need to know before the operator at each desk wakes up and starts using
 their laptop. `processes` only sees what is running right now, and the thing you
-are hunting exited weeks ago. `shimcache` holds the answer but will not write it
+are hunting exited weeks ago. `shimcache` holds the answer but won't write it
 to disk until the machine reboots, and rebooting twelve thousand endpoints to
 answer a question destroys the volatile evidence you would want if any of them
-comes back positive. So the honest options were: wait for the next reboot cycle
+comes back positive. The honest options were: wait for the next reboot cycle
 and hope, or pick the hosts you can justify pulling offline, image them, and run
 a forensics tool over the hive by hand. Both answer the question days late, and
 the second answers it for a handful of machines rather than for the fleet.
@@ -46,11 +46,11 @@ the second answers it for a handful of machines rather than for the fleet.
 Amcache already had the answer the entire time. The Microsoft Compatibility
 Appraiser writes SHA-1, full path, publisher and PE metadata for binaries it has
 seen, and it writes them continuously rather than at shutdown. The file simply
-was not readable through osquery: it is a registry hive the appraiser usually
+was not readable through osquery: it's a registry hive the appraiser usually
 holds open, frequently mid-write, and osquery's registry table cannot open an
 arbitrary hive file at all.
 
-This extension makes that file queryable in place, while it is locked, without
+This extension makes that file queryable in place, while locked, without
 a reboot and without taking the host offline. The 02:00 question becomes a live
 query, sub-second per host once the hive is parsed and cached, and a few seconds
 on the first query of a locked hive:
@@ -79,7 +79,7 @@ What that changes for an operator, concretely:
   than four tools.
 
 The caveat that keeps this honest: Amcache records that the appraiser *saw* a
-file, which is not proof of execution. It is an excellent lead and a poor
+file, which is not proof of execution. It's an excellent lead and a poor
 conclusion. See [Caveats](#caveats).
 
 ## Tables
@@ -95,7 +95,7 @@ conclusion. See [Caveats](#caveats).
 | `amcache_device_containers` | physical devices behind those interfaces | `container_id`, `friendly_name` |
 
 `sha1` in `amcache_application_files` comes from the hive's `FileId` field and in
-`amcache_driver_binaries` from `DriverId`. It is not derived from `ProgramId`,
+`amcache_driver_binaries` from `DriverId`. It's not derived from `ProgramId`,
 which is a name/version/publisher digest and not a file hash.
 
 Every column is `text`, `integer` or `bigint`. A value that is absent from the
@@ -152,7 +152,7 @@ writable by a non-administrator, so place it somewhere Administrators own with
 inheritance disabled. `--allow_unsafe` bypasses that check and is a development
 shortcut, not a deployment flag.
 
-Confirm it is up:
+Confirm it's up:
 
 ```sql
 SELECT name, version FROM osquery_extensions WHERE name = 'amcache_windows';
@@ -237,8 +237,8 @@ folder all land here.
 
 ### 6. Check what Amcache claims against what is on disk now
 
-osquery's `hash` table needs a concrete path -- it will not hash the whole
-filesystem for you -- so constrain the left side first and keep the set small:
+osquery's `hash` table needs a concrete path and won't hash the whole
+filesystem for you. Constrain the left side first and keep the set small:
 
 ```sql
 SELECT f.path, f.sha1 AS amcache_sha1, h.sha1 AS current_sha1
@@ -251,7 +251,7 @@ WHERE f.path LIKE 'c:\users\%\appdata\local\temp\%'
 ```
 
 A mismatch means the file at that path is not the file Amcache recorded: it was
-replaced, or something is masquerading as it. Two things will produce a false
+replaced, or something is masquerading as it. Two things produce a false
 positive. Windows hashes only the first 31,457,280 bytes of a file into
 `FileId`, so anything larger legitimately differs; and an ordinary update
 rewrites the file without anything being wrong.
@@ -299,7 +299,7 @@ ORDER BY p.first_install_time DESC;
 ```
 
 Devices persist in Amcache after removal, so this answers "what was ever plugged
-into this machine", not just what is attached now. `first_install_time` is the
+into this machine," not just what is attached now. `first_install_time` is the
 first time Windows enumerated that specific device.
 
 ### 10. Device-stack filter drivers, correlated to their binaries
@@ -335,7 +335,7 @@ exceeds thirty seconds the query fails rather than hanging, and the failure is
 remembered for the rest of the cache window instead of being retried per query.
 
 `amcache_application_files` is the large one and can carry tens of thousands of
-rows. A scheduled `SELECT *` against it will produce log lines larger than
+rows. A scheduled `SELECT *` against it produces log lines larger than
 Fleet's 1 MB per-line limit; filter on `path`, `sha1` or `program_id` instead.
 Those three are pushed down and evaluated before rows are built. An equality on
 any other column, `last_write_time` included, still narrows the result but is
@@ -346,18 +346,18 @@ applied by SQLite after every row has been built.
 When the hive is locked, the extension opens `\\.\C:` read-only and reads the
 file through a raw NTFS parser. That is a privileged volume handle, and EDR
 products reasonably treat it as suspicious. It happens only after a genuine
-sharing violation on the ordinary open, it is read-only, and it touches exactly
+sharing violation on the ordinary open, it's read-only, and it touches exactly
 one path. If your EDR alerts on it, allow-list the extension by its Authenticode
 publisher or by the SHA-256 in the release's `SHA256SUMS`.
 
 ## Caveats
 
-Amcache records that the appraiser *saw* a file. It is not proof of execution,
+Amcache records that the appraiser *saw* a file. It's not proof of execution,
 and the key's last-write time is when the appraiser wrote the record, not when
 the program ran or the device was attached. Treat `last_write_time` as an
 inventory timestamp.
 
-`link_time` deserves its own warning. It is the PE header's `TimeDateStamp`,
+`link_time` deserves its own warning. It's the PE header's `TimeDateStamp`,
 copied out of the binary by the appraiser without being validated, and on the
 hosts this was measured against it decodes to a timestamp for roughly seven in
 ten of the records that carry it at all. The rest divide into two groups. Some
@@ -379,18 +379,18 @@ hash; and fewer than one in ten rows carry both. Windows 10 and Windows Server
 rely on a result: a hash sweep like example 3 returns rows whose `path` is empty,
 a path lookup like example 2 returns a row whose `sha1` is empty, and the hash
 comparison in example 6 can only reach the small minority of rows carrying both.
-None of this is a fault in the extension; it is what the appraiser wrote.
+None of this is a fault in the extension; it's what the appraiser wrote.
 
 Only the modern hive format is parsed: Windows 10 1809 and later, Windows 11,
-Windows Server 2022 and later. A pre-Windows-8 hive carrying `Root\File` and
-`Root\Programs` yields zero rows and one log line rather than an error.
+and Windows Server 2022 and later. A pre-Windows-8 hive carrying `Root\File`
+and `Root\Programs` yields zero rows and one log line rather than an error.
 
 Uninstalled programs disappear from `amcache_applications` while their files
 often remain in `amcache_application_files`, which is why example 5 finds what
 it finds.
 
-Administrative rights are required to read the hive, and SYSTEM is required for
-the raw fallback path.
+Reading the hive requires administrative rights, and the raw fallback path
+requires SYSTEM.
 
 ## License
 
